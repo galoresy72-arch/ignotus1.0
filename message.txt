@@ -1,0 +1,821 @@
+#!/usr/bin/env python3
+# q_v3_osint.py - Painel Galore & Bronxsthegod (azul) + by galore (versão estendida com OSINT Investigador)
+# Novos módulos: Info Sistema, Notas, Auditor de Senhas, Verificador de URLs, WHOIS simples, Lista de Processos
+# + Módulo OSINT Investigador (uso ético/administrativo)
+# USO ÉTICO: projetado para administração, investigação legal e apoio a autoridades. NÃO use para invasão, stalking ou abuso.
+
+import os
+import platform
+import time
+import json
+import requests
+import socket
+import sys
+import shutil
+import subprocess
+import re
+from typing import Tuple, List
+from datetime import datetime
+import math
+
+# -------------------------
+# Cores ANSI (azul)
+# -------------------------
+BLUE = '\033[94m'
+GREEN = '\033[92m'
+YELLOW = '\033[93m'
+RED = '\033[91m'
+RESET = '\033[0m'
+
+def colored(text: str, color: str = BLUE) -> str:
+    return f"{color}{text}{RESET}"
+
+# -------------------------
+# Clear screen util
+# -------------------------
+def clear_screen():
+    if platform.system() == "Windows":
+        os.system("cls")
+    else:
+        os.system("clear")
+
+# -------------------------
+# Painel ASCII (mantido)
+# -------------------------
+PANEL = r"""
+@@@   @@@@@@@@  @@@  @@@   @@@@@@   @@@@@@@  @@@  @@@   @@@@@@   
+@@@  @@@@@@@@@  @@@@ @@@  @@@@@@@@  @@@@@@@  @@@  @@@  @@@@@@@   
+@@!  !@@        @@!@!@@@  @@!  @@@    @@!    @@!  @@@  !@@       
+!@!  !@!        !@!!@!@!  !@!  !@!    !@!    !@!  !@!  !@!       
+!!@  !@! @!@!@  @!@ !!@!  @!@  !@!    @!!    @!@  !@!  !!@@!!    
+!!!  !!! !!@!!  !@!  !!!  !@!  !!!    !!!    !@!  !!!   !!@!!!   
+!!:  :!!   !!:  !!:  !!!  !!:  !!!    !!:    !!:  !!!       !:!  
+:!:  :!:   !::  :!:  !:!  :!:  !:!    :!:    :!:  !:!      !:!   
+ ::   ::: ::::   ::   ::  ::::: ::     ::    ::::: ::  :::: ::   
+:     :: :: :   ::    :    : :  :      :      : :  :   :: : :   
+"""
+
+# -------------------------
+# HEADERS e constantes
+# -------------------------
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Panel/1.0)"}
+NOTES_DIR = os.path.expanduser("~/.galore_panel_notes")
+COMMON_PASSWORDS = {
+    "123456","password","123456789","12345678","12345","qwerty","abc123","password1","111111","1234"
+}
+
+# garante diretório de notas
+os.makedirs(NOTES_DIR, exist_ok=True)
+
+# -------------------------
+# UTILs
+# -------------------------
+def prompt_enter():
+    input("\nPressione Enter para continuar...")
+
+def safe_input(msg: str) -> str:
+    try:
+        return input(msg)
+    except (KeyboardInterrupt, EOFError):
+        return ""
+
+def confirm_authorization() -> bool:
+    """
+    Exige confirmação explícita de autorização legal para usar ferramentas OSINT.
+    Retorna True somente se o usuário confirmar.
+    """
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== AUTORIZAÇÃO NECESSÁRIA ===", RED))
+    print("A ferramenta OSINT é poderosa. Use APENAS para investigações legais, com")
+    print("autorização da autoridade competente ou para fins de defesa/segurança.")
+    print("Ao prosseguir, você confirma que tem autorização legal para realizar esta investigação.")
+    ans = safe_input("Confirmar autorização e prosseguir? (s/N): ").strip().lower()
+    return ans == "s"
+
+# -------------------------
+# Módulo: Info do Sistema
+# -------------------------
+def system_info_module():
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== INFO DO SISTEMA ===", GREEN))
+    try:
+        uname = platform.uname()
+        print(f"Sistema: {uname.system} {uname.release} ({uname.version})")
+        print(f"Máquina: {uname.machine}")
+        print(f"Processador: {uname.processor or 'N/A'}")
+        print(f"Python: {platform.python_version()} (executable: {sys.executable})")
+        # Disco e memória (quando possível)
+        total, used, free = shutil.disk_usage(os.path.expanduser("~"))
+        print(f"Disco (home) total: {total // (2**30)} GiB, usado: {used // (2**30)} GiB, livre: {free // (2**30)} GiB")
+        # uptime (tentativa multiplataforma)
+        uptime_str = get_uptime()
+        print(f"Uptime: {uptime_str}")
+    except Exception as e:
+        print("Erro ao coletar info do sistema:", e)
+    prompt_enter()
+
+def get_uptime() -> str:
+    try:
+        if platform.system() == "Windows":
+            import ctypes, ctypes.wintypes
+            GetTickCount64 = ctypes.windll.kernel32.GetTickCount64
+            ms = GetTickCount64()
+            seconds = int(ms // 1000)
+        else:
+            with open("/proc/uptime", "r") as f:
+                seconds = int(float(f.readline().split()[0]))
+        days = seconds // 86400
+        hours = (seconds % 86400) // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{days}d {hours}h {minutes}m"
+    except Exception:
+        return "Desconhecido"
+
+# -------------------------
+# Módulo: Notas (CRUD simples)
+# -------------------------
+def notes_module():
+    while True:
+        clear_screen()
+        print(colored(PANEL))
+        print(colored("=== GERENCIADOR DE NOTAS ===", GREEN))
+        print("[1] Criar nova nota")
+        print("[2] Listar notas")
+        print("[3] Ver nota")
+        print("[4] Apagar nota")
+        print("[0] Voltar")
+        escolha = safe_input("Escolha: ").strip()
+        if escolha == "1":
+            title = safe_input("Título da nota: ").strip()
+            if not title:
+                print("Título vazio.")
+                prompt_enter(); continue
+            filename = f"{int(time.time())}_{sanitize_filename(title)}.txt"
+            path = os.path.join(NOTES_DIR, filename)
+            print("Digite o conteúdo (Ctrl+D / Ctrl+Z + Enter para finalizar):")
+            try:
+                content = sys.stdin.read() if sys.stdin.isatty() == False else multiline_input()
+            except Exception:
+                content = ""
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"Title: {title}\nCreated: {datetime.now().isoformat()}\n\n")
+                f.write(content)
+            print(f"Nota salva: {path}")
+            prompt_enter()
+        elif escolha == "2":
+            files = sorted(os.listdir(NOTES_DIR))
+            clear_screen(); print(colored(PANEL)); print(colored("Notas salvas:", GREEN))
+            if not files:
+                print("- nenhuma nota -")
+            else:
+                for f in files:
+                    print(f)
+            prompt_enter()
+        elif escolha == "3":
+            name = safe_input("Nome do arquivo de nota (ex: 1600000000_titulo.txt): ").strip()
+            path = os.path.join(NOTES_DIR, name)
+            if os.path.exists(path):
+                clear_screen(); print(colored(PANEL)); print(colored(f"=== {name} ===", GREEN))
+                with open(path, "r", encoding="utf-8") as f:
+                    print(f.read())
+            else:
+                print("Arquivo não encontrado.")
+            prompt_enter()
+        elif escolha == "4":
+            name = safe_input("Nome do arquivo a apagar: ").strip()
+            path = os.path.join(NOTES_DIR, name)
+            if os.path.exists(path):
+                confirm = safe_input(f"Tem certeza que deseja apagar {name}? (s/N): ").strip().lower()
+                if confirm == "s":
+                    os.remove(path)
+                    print("Apagado.")
+                else:
+                    print("Cancelado.")
+            else:
+                print("Arquivo não encontrado.")
+            prompt_enter()
+        elif escolha == "0":
+            break
+        else:
+            print("Opção inválida.")
+            prompt_enter()
+
+def sanitize_filename(s: str) -> str:
+    return "".join(c for c in s if c.isalnum() or c in (" ", "-", "_")).rstrip().replace(" ", "_")
+
+def multiline_input(prompt_text: str = "") -> str:
+    print(prompt_text + "(Digite linha por linha. Finalize com linha vazia.)")
+    lines = []
+    try:
+        while True:
+            line = input()
+            if line == "":
+                break
+            lines.append(line)
+    except (KeyboardInterrupt, EOFError):
+        pass
+    return "\n".join(lines)
+
+# -------------------------
+# Módulo: Auditor de Senhas (local e ético)
+# -------------------------
+def password_auditor_module():
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== AUDITOR DE SENHAS (LOCAL & ÉTICO) ===", YELLOW))
+    print("Este módulo faz checagens locais: entropia estimada e comparação com lista curta de senhas comuns.")
+    pwd = safe_input("Digite a senha a auditar (ou cole): ")
+    if not pwd:
+        print("Senha vazia.")
+        prompt_enter(); return
+    score, entropy = password_strength_estimate(pwd)
+    common = pwd.lower() in COMMON_PASSWORDS
+    print(f"Comprimento: {len(pwd)} caracteres")
+    print(f"Entropia estimada: {entropy:.2f} bits")
+    print(f"Pontuação (0 fraca - 4 forte): {score}/4")
+    if common:
+        print(colored("Atenção: senha encontrada na lista comum embarcada!", RED))
+    else:
+        print(colored("Senha não encontrada na lista comum embarcada.", GREEN))
+    print("\nSugestões:")
+    if entropy < 28:
+        print("- Senha fraca. Use uma frase de passphrase (4+ palavras) ou aumente a complexidade/length.")
+    elif entropy < 50:
+        print("- Senha razoável, mas considere aumentar comprimento.")
+    else:
+        print("- Boa entropia.")
+    prompt_enter()
+
+def password_strength_estimate(pwd: str) -> Tuple[int, float]:
+    pool = 0
+    if any(c.islower() for c in pwd): pool += 26
+    if any(c.isupper() for c in pwd): pool += 26
+    if any(c.isdigit() for c in pwd): pool += 10
+    if any(not c.isalnum() for c in pwd): pool += 32
+    if pool == 0:
+        entropy = 0.0
+    else:
+        entropy = math.log2(pool) * len(pwd)
+    if entropy < 28:
+        score = 0
+    elif entropy < 36:
+        score = 1
+    elif entropy < 60:
+        score = 2
+    elif entropy < 80:
+        score = 3
+    else:
+        score = 4
+    return score, entropy
+
+# -------------------------
+# Módulo: Verificador de URLs (seguro)
+# -------------------------
+def url_checker_module():
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== VERIFICADOR DE URLs (HEAD + GET seguro) ===", YELLOW))
+    url = safe_input("Digite a URL (ex: https://example.com): ").strip()
+    if not url:
+        print("URL vazia.")
+        prompt_enter(); return
+    if not (url.startswith("http://") or url.startswith("https://")):
+        print("Informe http:// ou https://")
+        prompt_enter(); return
+    try:
+        print("Enviando HEAD...")
+        head = requests.head(url, headers=HEADERS, timeout=8, allow_redirects=True)
+        print(f"Status HEAD: {head.status_code}")
+        print(f"Content-Type: {head.headers.get('Content-Type')}")
+        try:
+            length = int(head.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        if length == 0 or length < 1024*100:
+            print("Fazendo GET (conteúdo pequeno)...")
+            get = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
+            print(f"Status GET: {get.status_code}")
+            print(f"Tamanho do corpo: {len(get.content)} bytes")
+        else:
+            print(f"Conteúdo grande ({length} bytes) — pulando GET por segurança.")
+    except requests.RequestException as e:
+        print("Erro na requisição:", e)
+    prompt_enter()
+
+# -------------------------
+# Módulo: WHOIS simples (via socket)
+# -------------------------
+def whois_query(domain: str, server: str = None, timeout: float = 8.0) -> str:
+    domain = domain.strip()
+    if domain.startswith("http://") or domain.startswith("https://"):
+        domain = domain.split("://",1)[1].split("/")[0]
+    if ":" in domain:
+        domain = domain.split(":")[0]
+    if server is None:
+        tld = domain.split(".")[-1].lower()
+        server = WHOIS_SERVERS.get(tld, "whois.iana.org")
+    try:
+        s = socket.create_connection((server, 43), timeout=timeout)
+        query = domain + "\r\n"
+        s.send(query.encode("utf-8"))
+        data = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        s.close()
+        return data.decode(errors="replace")
+    except Exception as e:
+        return f"ERRO: {e}"
+
+WHOIS_SERVERS = {
+    "com": "whois.verisign-grs.com",
+    "net": "whois.verisign-grs.com",
+    "org": "whois.pir.org",
+    "br": "whois.registro.br",
+    "io": "whois.nic.io",
+}
+
+def whois_module():
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== WHOIS SIMPLES (uso administrativo) ===", YELLOW))
+    domain = safe_input("Digite domínio (ex: example.com): ").strip()
+    if not domain:
+        print("Domínio vazio.")
+        prompt_enter(); return
+    print("Nota: Esta é uma consulta WHOIS simples. Use de forma ética e não para engenharia social.")
+    print("Executando consulta...")
+    res = whois_query(domain)
+    print(res[:2000])
+    if len(res) > 2000:
+        print("\n--- saída truncada ---")
+    prompt_enter()
+
+# -------------------------
+# Módulo: Lista de Processos (multiplataforma, só listagem)
+# -------------------------
+def process_list_module():
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== LISTA DE PROCESSOS ===", GREEN))
+    try:
+        if platform.system() == "Windows":
+            out = subprocess.check_output(["tasklist"], shell=False, stderr=subprocess.DEVNULL)
+            text = out.decode(errors="replace")
+            print(text)
+        else:
+            out = subprocess.check_output(["ps", "aux"], stderr=subprocess.DEVNULL)
+            text = out.decode(errors="replace")
+            print(text)
+    except Exception as e:
+        print("Erro ao listar processos:", e)
+    prompt_enter()
+
+# -------------------------
+# Reuso: Webhook / Consultas / Sherlock (mantido)
+# -------------------------
+def send_webhook_message(webhook_url, content=None, embed=None):
+    payload = {}
+    if content:
+        payload["content"] = content
+    if embed:
+        payload["embeds"] = [embed]
+    try:
+        resp = requests.post(webhook_url, headers={"Content-Type": "application/json"}, data=json.dumps(payload), timeout=10)
+    except Exception as e:
+        return {"error": f"Erro de conexão: {e}"}
+    if resp.status_code in (200, 204):
+        return {"status": "ok"}
+    elif resp.status_code == 429:
+        try:
+            data = resp.json()
+            retry_after = data.get("retry_after", 1)
+        except Exception:
+            retry_after = 1
+        return {"error": "rate_limited", "retry_after": retry_after}
+    else:
+        return {"error": "http_error", "status_code": resp.status_code, "text": resp.text}
+
+def webhook_module():
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== WEBHOOK (módulo reduzido) ===", YELLOW))
+    print("Uso: apenas para envios autorizados e administrativos.")
+    url = safe_input("URL do webhook (Discord) ou ENTER para voltar: ").strip()
+    if not url:
+        return
+    content = safe_input("Mensagem (use {index} para numeração): ") or "Olá ({index})"
+    try:
+        count = int(safe_input("Quantas mensagens? [1]: ") or "1")
+    except ValueError:
+        count = 1
+    try:
+        interval = float(safe_input("Intervalo entre mensagens (s) [0.5]: ") or "0.5")
+    except ValueError:
+        interval = 0.5
+    for i in range(1, count+1):
+        c = content.format(index=i)
+        result = send_webhook_message(url, content=c)
+        print(f"[{i}/{count}] -> {result}")
+        if i != count:
+            time.sleep(interval)
+    prompt_enter()
+
+def consulta_cpf():
+    clear_screen(); print(colored(PANEL)); print(colored("by galore\n"))
+    cpf = safe_input("Digite o CPF (somente números): ").strip()
+    if not cpf.isdigit() or len(cpf) != 11:
+        print("CPF inválido. Deve conter 11 dígitos numéricos.")
+        prompt_enter(); return
+    url = f"https://patronhost.online/apis/cpf.php?cpf={cpf}"
+    try:
+        resp = requests.get(url, timeout=10, headers=HEADERS)
+        data = resp.json()
+        clear_screen(); print(colored(PANEL)); print(colored("Resultado da consulta:"))
+        print(json.dumps(data, indent=4, ensure_ascii=False))
+    except Exception as e:
+        print(f"Erro ao consultar CPF: {e}")
+    prompt_enter()
+
+def consulta_placa():
+    clear_screen(); print(colored(PANEL)); print(colored("by galore\n"))
+    placa = safe_input("Digite a placa (ex: ABC1234): ").strip().upper()
+    if len(placa) < 6 or len(placa) > 7:
+        print("Placa inválida.")
+        prompt_enter(); return
+    url = f"https://patronhost.online/apis/placa.php?placa={placa}"
+    try:
+        resp = requests.get(url, timeout=10, headers=HEADERS)
+        data = resp.json()
+        clear_screen(); print(colored(PANEL)); print(colored("Resultado da consulta:"))
+        print(json.dumps(data, indent=4, ensure_ascii=False))
+    except Exception as e:
+        print(f"Erro ao consultar placa: {e}")
+    prompt_enter()
+
+def consulta_cnpj():
+    clear_screen(); print(colored(PANEL)); print(colored("by galore\n"))
+    cnpj = safe_input("Digite o CNPJ (somente números): ").strip()
+    if not cnpj.isdigit() or len(cnpj) != 14:
+        print("CNPJ inválido. Deve conter 14 dígitos numéricos.")
+        prompt_enter(); return
+    url = f"https://receitaws.com.br/v1/cnpj/{cnpj}"
+    try:
+        resp = requests.get(url, timeout=10, headers=HEADERS)
+        data = resp.json()
+        clear_screen(); print(colored(PANEL)); print(colored("Resultado da consulta:"))
+        print(json.dumps(data, indent=4, ensure_ascii=False))
+    except Exception as e:
+        print(f"Erro ao consultar CNPJ: {e}")
+    prompt_enter()
+
+def consultations_menu():
+    while True:
+        clear_screen(); print(colored(PANEL)); print(colored("=== Menu Consultas ==="))
+        print("[1] Consultar CPF")
+        print("[2] Consultar Placa")
+        print("[3] Consultar CNPJ")
+        print("[0] Voltar")
+        escolha = safe_input("Escolha: ").strip()
+        if escolha == "1":
+            consulta_cpf()
+        elif escolha == "2":
+            consulta_placa()
+        elif escolha == "3":
+            consulta_cnpj()
+        elif escolha == "0":
+            break
+        else:
+            print("Opção inválida.")
+            prompt_enter()
+
+# -------------------------
+# Sherlock-like simplified (busca usernames públicos; mantém aviso ético)
+# -------------------------
+SOCIAL_PATTERNS = [
+    ("GitHub",    "https://github.com/{user}"),
+    ("Twitter/X", "https://twitter.com/{user}"),
+    ("Instagram", "https://www.instagram.com/{user}"),
+    ("Reddit",    "https://www.reddit.com/user/{user}"),
+    ("LinkedIn",  "https://www.linkedin.com/in/{user}"),
+    ("TikTok",    "https://www.tiktok.com/@{user}"),
+    ("YouTube",   "https://www.youtube.com/{user}"),
+]
+
+def check_profile_url(url: str, timeout: float = 8.0) -> Tuple[str, str]:
+    try:
+        resp = requests.head(url, headers=HEADERS, allow_redirects=True, timeout=timeout)
+        code = resp.status_code
+        if code in (200, 301, 302):
+            return "FOUND", str(code)
+        if code == 404:
+            return "NOT FOUND", str(code)
+        return ("FOUND" if code < 400 else "NOT FOUND"), str(code)
+    except requests.RequestException:
+        return "UNKNOWN", "request_error"
+
+def sherlock_module():
+    clear_screen(); print(colored(PANEL)); print(colored("=== Sherlock-like (ethic) ==="))
+    print("Pesquise apenas perfis públicos e com permissão quando aplicável.")
+    username = safe_input("Digite o username: ").strip()
+    if not username:
+        print("Username vazio.")
+        prompt_enter(); return
+    try:
+        delay = float(safe_input("Delay entre requests (s) [1.0]: ") or "1.0")
+    except ValueError:
+        delay = 1.0
+    results = []
+    for name, pattern in SOCIAL_PATTERNS:
+        profile_url = pattern.format(user=username)
+        print(f"[..] Checando {name}: {profile_url}")
+        status, reason = check_profile_url(profile_url, timeout=6.0)
+        results.append((name, profile_url, status, reason))
+        print(f"    -> {status} ({reason})\n")
+        time.sleep(delay)
+    print("\n--- Resumo ---")
+    for name, url, status, reason in results:
+        mark = "✅" if status == "FOUND" else ("❌" if status == "NOT FOUND" else "❔")
+        print(f"{mark} {name:12} | {status:9} | {reason:6} | {url}")
+    if safe_input("\nSalvar resultados? (s/N): ").strip().lower() == "s":
+        fname = f"sherlock_{username}_{int(time.time())}.txt"
+        try:
+            with open(fname, "w", encoding="utf-8") as f:
+                f.write(f"Sherlock-like results for {username}\n\n")
+                for name, url, status, reason in results:
+                    f.write(f"{name}\t{status}\t{reason}\t{url}\n")
+            print("Salvo em:", fname)
+        except Exception as e:
+            print("Erro ao salvar:", e)
+    prompt_enter()
+
+# -------------------------
+# Módulo OSINT Investigador (nova opção [5])
+# -------------------------
+def run_nslookup(domain: str, lookup_type: str = "A") -> str:
+    """
+    Usa nslookup para obter registros A/MX/etc. Retorna saída bruta (seguro: apenas leitura).
+    """
+    try:
+        if platform.system() == "Windows":
+            cmd = ["nslookup", "-type=" + lookup_type, domain]
+        else:
+            # Unix também aceita nslookup -type=TYPE domain
+            cmd = ["nslookup", "-type=" + lookup_type, domain]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=8)
+        return out.decode(errors="replace")
+    except Exception as e:
+        return f"ERRO (nslookup): {e}"
+
+def validate_email(email: str) -> bool:
+    # validação simples (não exaustiva)
+    pattern = r"^[^@]+@[^@]+\.[^@]+$"
+    return re.match(pattern, email) is not None
+
+def osint_username_scan(username: str, delay: float = 1.0) -> List[Tuple[str,str,str]]:
+    """
+    Verifica presença do username em serviços públicos (usa HEAD requests, seguro).
+    Retorna lista de (serviço, url, status).
+    """
+    results = []
+    for name, pattern in SOCIAL_PATTERNS:
+        url = pattern.format(user=username)
+        status, reason = check_profile_url(url, timeout=6.0)
+        results.append((name, url, status))
+        time.sleep(delay)
+    return results
+
+def osint_domain_scan(domain: str) -> dict:
+    """
+    Faz WHOIS e lookups A/MX via nslookup. Retorna dicionário com resultados.
+    """
+    res = {}
+    res['whois'] = whois_query(domain)[:5000]  # limita tamanho para evitar poluição
+    res['nslookup_A'] = run_nslookup(domain, "A")
+    res['nslookup_MX'] = run_nslookup(domain, "MX")
+    # tentativa de resolução direta por socket (A)
+    try:
+        ips = socket.gethostbyname_ex(domain)[2]
+        res['resolved_ips'] = ips
+    except Exception as e:
+        res['resolved_ips'] = f"ERRO: {e}"
+    return res
+
+def osint_email_scan(email: str) -> dict:
+    """
+    Verifica formato, domain WHOIS e MX records do domínio do email.
+    Útil para coletar evidências em investigação; não realiza envio de e-mail nem vazamentos.
+    """
+    res = {}
+    res['valid_format'] = validate_email(email)
+    if not res['valid_format']:
+        return res
+    domain = email.split("@",1)[1]
+    res['domain'] = domain
+    res['whois_domain'] = whois_query(domain)[:3000]
+    res['mx_records'] = run_nslookup(domain, "MX")
+    return res
+
+def osint_module():
+    """
+    Interface do Investigador OSINT. Exige confirmação legal antes de rodar.
+    Fornece opções: username scan, domain scan, email scan, relatório.
+    """
+    if not confirm_authorization():
+        print(colored("Autorização não confirmada. Saindo do módulo OSINT.", RED))
+        prompt_enter()
+        return
+
+    clear_screen()
+    print(colored(PANEL))
+    print(colored("=== OSINT INVESTIGADOR (uso ético/legal) ===", YELLOW))
+    print("Aviso: evite consultas em massa ou scraping agressivo. Use para apoio a investigações autorizadas.")
+    while True:
+        print("\n[1] Scannear USERNAME (perfis públicos)")
+        print("[2] Scannear DOMAIN (WHOIS + DNS)")
+        print("[3] Scannear EMAIL (formato + domínio + MX)")
+        print("[4] Gerar relatório consolidado (última execução)")
+        print("[0] Voltar")
+        escolha = safe_input("Escolha: ").strip()
+        if escolha == "1":
+            username = safe_input("Username (ex: usuario123): ").strip()
+            if not username:
+                print("Username vazio.")
+                prompt_enter(); continue
+            try:
+                delay = float(safe_input("Delay entre requests (s) [1.0]: ") or "1.0")
+            except ValueError:
+                delay = 1.0
+            results = osint_username_scan(username, delay=delay)
+            clear_screen(); print(colored(PANEL)); print(colored(f"=== Resultados username: {username} ===", GREEN))
+            for svc, url, status in results:
+                mark = "ENCONTRADO" if status == "FOUND" else ("NÃO" if status == "NOT FOUND" else "DESCONHECIDO")
+                print(f"{svc:12} | {mark:9} | {url}")
+            # guarda último relatório em memória simples
+            global LAST_OSINT_REPORT
+            LAST_OSINT_REPORT = {"type":"username","target":username,"results":results,"time":datetime.now().isoformat()}
+            if safe_input("\nSalvar relatório em arquivo? (s/N): ").strip().lower() == "s":
+                fname = f"osint_username_{username}_{int(time.time())}.json"
+                try:
+                    with open(fname, "w", encoding="utf-8") as f:
+                        json.dump(LAST_OSINT_REPORT, f, ensure_ascii=False, indent=2)
+                    print("Relatório salvo em:", fname)
+                except Exception as e:
+                    print("Erro ao salvar:", e)
+            prompt_enter()
+        elif escolha == "2":
+            domain = safe_input("Domínio (ex: example.com): ").strip()
+            if not domain:
+                print("Domínio vazio.")
+                prompt_enter(); continue
+            print("Executando WHOIS e lookups (pode levar alguns segundos)...")
+            res = osint_domain_scan(domain)
+            clear_screen(); print(colored(PANEL)); print(colored(f"=== Resultados domain: {domain} ===", GREEN))
+            print("\n--- WHOIS (trecho) ---\n")
+            print(res['whois'][:1000])
+            print("\n--- NSLOOKUP A ---\n")
+            print(res['nslookup_A'][:1000])
+            print("\n--- NSLOOKUP MX ---\n")
+            print(res['nslookup_MX'][:1000])
+            print("\n--- Resolved IPs ---")
+            print(res['resolved_ips'])
+            LAST_OSINT_REPORT = {"type":"domain","target":domain,"results":res,"time":datetime.now().isoformat()}
+            if safe_input("\nSalvar relatório em arquivo? (s/N): ").strip().lower() == "s":
+                fname = f"osint_domain_{domain}_{int(time.time())}.json"
+                try:
+                    with open(fname, "w", encoding="utf-8") as f:
+                        json.dump(LAST_OSINT_REPORT, f, ensure_ascii=False, indent=2)
+                    print("Relatório salvo em:", fname)
+                except Exception as e:
+                    print("Erro ao salvar:", e)
+            prompt_enter()
+        elif escolha == "3":
+            email = safe_input("Email (ex: alguém@dominio.com): ").strip()
+            if not email:
+                print("Email vazio.")
+                prompt_enter(); continue
+            print("Executando verificação de email e domínio (pode levar alguns segundos)...")
+            res = osint_email_scan(email)
+            clear_screen(); print(colored(PANEL)); print(colored(f"=== Resultados email: {email} ===", GREEN))
+            print("Formato válido:", res.get('valid_format', False))
+            if res.get('valid_format'):
+                print("Domínio:", res.get('domain'))
+                print("\n--- WHOIS dominio (trecho) ---\n")
+                print(res.get('whois_domain','')[:1000])
+                print("\n--- MX records (nslookup) ---\n")
+                print(res.get('mx_records','')[:1000])
+            LAST_OSINT_REPORT = {"type":"email","target":email,"results":res,"time":datetime.now().isoformat()}
+            if safe_input("\nSalvar relatório em arquivo? (s/N): ").strip().lower() == "s":
+                safe_name = re.sub(r'[^a-zA-Z0-9@._-]', '_', email)
+                fname = f"osint_email_{safe_name}_{int(time.time())}.json"
+                try:
+                    with open(fname, "w", encoding="utf-8") as f:
+                        json.dump(LAST_OSINT_REPORT, f, ensure_ascii=False, indent=2)
+                    print("Relatório salvo em:", fname)
+                except Exception as e:
+                    print("Erro ao salvar:", e)
+            prompt_enter()
+        elif escolha == "4":
+            if 'LAST_OSINT_REPORT' not in globals():
+                print("Nenhuma execução anterior encontrada.")
+                prompt_enter(); continue
+            clear_screen(); print(colored(PANEL)); print(colored("=== Último relatório OSINT ===", GREEN))
+            print(json.dumps(LAST_OSINT_REPORT, ensure_ascii=False, indent=2))
+            if safe_input("\nSalvar cópia do relatório? (s/N): ").strip().lower() == "s":
+                fname = f"osint_report_copy_{int(time.time())}.json"
+                try:
+                    with open(fname, "w", encoding="utf-8") as f:
+                        json.dump(LAST_OSINT_REPORT, f, ensure_ascii=False, indent=2)
+                    print("Salvo em:", fname)
+                except Exception as e:
+                    print("Erro ao salvar:", e)
+            prompt_enter()
+        elif escolha == "0":
+            break
+        else:
+            print("Opção inválida.")
+            prompt_enter()
+
+# -------------------------
+# Menus novos e integração
+# -------------------------
+def menu_extended_tools():
+    while True:
+        clear_screen()
+        print(colored(PANEL))
+        print(colored("=== FERRAMENTAS ADICIONAIS ===", GREEN))
+        print("[1] Info do Sistema")
+        print("[2] Gerenciador de Notas")
+        print("[3] Auditor de Senhas (local)")
+        print("[4] Verificador de URLs")
+        print("[5] WHOIS simples")
+        print("[6] Lista de Processos")
+        print("[0] Voltar")
+        escolha = safe_input("Escolha: ").strip()
+        if escolha == "1":
+            system_info_module()
+        elif escolha == "2":
+            notes_module()
+        elif escolha == "3":
+            password_auditor_module()
+        elif escolha == "4":
+            url_checker_module()
+        elif escolha == "5":
+            whois_module()
+        elif escolha == "6":
+            process_list_module()
+        elif escolha == "0":
+            break
+        else:
+            print("Opção inválida.")
+            prompt_enter()
+
+# -------------------------
+# Mantém os módulos originais (Webhooks, Consultas, Sherlock) do código base,
+# mas sem alterar a lógica original (apenas chamados do menu principal).
+# -------------------------
+
+# -------------------------
+# Menu principal (integrado)
+# -------------------------
+def main():
+    while True:
+        clear_screen()
+        print(colored(PANEL))
+        print(colored("by galore & bronxsthegod\n", GREEN))
+        print(colored("=== MENU PRINCIPAL ==="))
+        print("[1] Webhook")
+        print("[2] Consultas")
+        print("[3] Sherlock (buscar usernames)")
+        print("[4] Ferramentas adicionais")
+        print("[5] OSINT Investigador (uso ético/legal)")  # NOVA OPÇÃO
+        print("[0] Sair")
+        escolha = safe_input("Escolha: ").strip()
+        if escolha == "1":
+            webhook_module()
+        elif escolha == "2":
+            consultations_menu()
+        elif escolha == "3":
+            sherlock_module()
+        elif escolha == "4":
+            menu_extended_tools()
+        elif escolha == "5":
+            osint_module()
+        elif escolha == "0":
+            clear_screen()
+            print("Saindo... Até logo!")
+            break
+        else:
+            clear_screen()
+            print(colored(PANEL)); print(colored("by galore\n"))
+            print("Opção inválida.")
+            prompt_enter()
+
+if __name__ == "__main__":
+    # variável global para manter o último relatório em memória enquanto o programa roda
+    LAST_OSINT_REPORT = {}
+    main()
